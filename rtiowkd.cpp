@@ -1,3 +1,4 @@
+#include "rnm/vec.hpp"
 #include <rnm/rnm.hpp>
 #include <rnm/format.hpp>
 
@@ -30,6 +31,9 @@ private:
 struct sphere {
     constexpr sphere() {}
     constexpr sphere(const vec3f& center, f32 radius) : center(center), radius(radius) {}
+
+    vec3f cent() const { return center; }
+    f32 rad() const { return radius; }
 
     // x^2 + y^2 + z^2 = r^2
     // (C - P)*(C - P) = r^2
@@ -90,8 +94,11 @@ void renderPPM(std::ostream& output, usize w, usize h, const color* data) {
 constexpr sphere s = sphere(vec3f{0, 0, -1}, .5f);
 
 color ray_color(const ray& ray) {
-    if(s.tintersection(ray).has_value()) {
-        return color{1, 1, 1};
+    std::optional<f32> tinter = s.tintersection(ray);
+    if(tinter) {
+        vec3f intersection = ray.at(*tinter);
+        vec3f normal = rnm::normalized(intersection - s.cent());
+        return (normal+color(1.0f))*.5f;
     }
 
     return color(0, 0, 0);
