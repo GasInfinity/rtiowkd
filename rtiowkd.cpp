@@ -1,4 +1,3 @@
-#include "rnm/vec.hpp"
 #include <rnm/rnm.hpp>
 #include <rnm/format.hpp>
 
@@ -28,6 +27,12 @@ private:
     vec3f direction;
 };
 
+struct ray_hit {
+    const f32 t;
+    const vec3f point;
+    const vec3f normal;
+};
+
 struct sphere {
     constexpr sphere() {}
     constexpr sphere(const vec3f& center, f32 radius) : center(center), radius(radius) {}
@@ -42,7 +47,7 @@ struct sphere {
     // d*d*t^2 - 2*d*(C- O)t + |(C - O)|^2 = r^2 
     // |d|^2 * t^2 - t*2*(d(C - O)) + |(C - O)|^2 - r^2 = 0
     // quadratic equation
-    std::optional<f32> tintersection(const ray& r) const {
+    std::optional<ray_hit> intersection(const ray& r, f32 min, f32 max) const {
         vec3f pos_diff = (center - r.org());
         f32 a = rnm::length_sqr(r.dir());
         f32 h = rnm::dot(r.dir(), pos_diff); 
@@ -53,8 +58,23 @@ struct sphere {
             return std::nullopt;
         } 
 
-        f32 min_solution = (h - std::sqrt(term_sqr)) / a;
-        return min_solution < 0 ? std::nullopt : std::make_optional(min_solution);
+        f32 term = std::sqrt(term_sqr);
+        f32 first_solution = (h - term) / a;
+        
+        f32 t = first_solution;
+        if(first_solution < min || first_solution > max) {
+            f32 second_solution = (h + term) / a;
+
+            if(second_solution < min || second_solution > max) {
+                return std::nullopt;
+            }
+
+            t = second_solution;
+        }
+        
+        vec3f point = r.at(t);
+        vec3f normal = (point - center) / radius;
+        return ray_hit{t, point, normal}; 
     }
 private:
     vec3f center;
@@ -94,11 +114,9 @@ void renderPPM(std::ostream& output, usize w, usize h, const color* data) {
 constexpr sphere s = sphere(vec3f{0, 0, -1}, .5f);
 
 color ray_color(const ray& ray) {
-    std::optional<f32> tinter = s.tintersection(ray);
-    if(tinter) {
-        vec3f intersection = ray.at(*tinter);
-        vec3f normal = rnm::normalized(intersection - s.cent());
-        return (normal+color(1.0f))*.5f;
+    std::optional<ray_hit> hit = s.intersection(ray, 0, 100000.f);
+    if(hit) {
+        return (hit->normal+color(1.0f))*.5f;
     }
 
     return color(0, 0, 0);
