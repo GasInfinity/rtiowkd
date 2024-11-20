@@ -135,9 +135,9 @@ struct camera {
 
         const vec3f viewport_u = vec3f(viewport_width, 0, 0);
         const vec3f viewport_v = vec3f(0, -viewport_height, 0);
-        const vec3f pixel_delta_u = viewport_u / f32(width);
-        const vec3f pixel_delta_v = viewport_v / f32(height);
-        const vec3f viewport_upper_left = position - vec3f(0, 0, focal_length) - viewport_u / f32(2) - viewport_v / f32(2);
+        const vec3f pixel_delta_u = viewport_u / width;
+        const vec3f pixel_delta_v = viewport_v / height;
+        const vec3f viewport_upper_left = position - vec3f(0, 0, focal_length) - viewport_u / 2 - viewport_v / 2;
         const vec3f p00 = viewport_upper_left + .5f * (pixel_delta_u + pixel_delta_v); 
         
         const f32 samples_scale = 1.f / samples_per_pixel;
@@ -148,7 +148,7 @@ struct camera {
 
                 for (usize k = 0; k < samples_per_pixel; ++k) {
                     const vec2f random_sample = random_sample_vec2f();
-                    const vec3f pixel_position = p00 + pixel_delta_u * f32(j + random_sample.x) + pixel_delta_v * f32(i + random_sample.y);
+                    const vec3f pixel_position = p00 + pixel_delta_u * (j + random_sample.x) + pixel_delta_v * (i + random_sample.y);
 
                     const vec3f ray_direction = pixel_position - position;
                     const ray ray{position, ray_direction};
