@@ -1,3 +1,4 @@
+#include <random>
 #include <rnm/rnm.hpp>
 #include <rnm/format.hpp>
 
@@ -13,8 +14,10 @@ typedef std::uint8_t u8;
 typedef std::uint16_t u16;
 typedef std::size_t usize;
 typedef float f32;
+typedef rnm::vec2<float> vec2f;
 typedef rnm::vec3<float> vec3f;
 typedef vec3f color;
+
 
 struct ray {
     constexpr ray(const vec3f& origin, const vec3f& direction) : origin(origin), direction(direction) {}
@@ -122,21 +125,62 @@ private:
     std::vector<hittable> objects;
 };
 
-constexpr usize image_width = 800;
-constexpr usize image_height = 600;
-constexpr f32 aspect_ratio = static_cast<f32>(image_width)/image_height;
+struct camera {
+    camera(const vec3f& position, f32 focal_length, f32 viewport_height, f32 samples_per_pixel)
+        : position(position), focal_length(focal_length), viewport_height(viewport_height), samples_per_pixel(samples_per_pixel), sampling_entropy(), sampling_distribution(0, 1) { }
 
-constexpr f32 viewport_height = 2.0;
-constexpr f32 viewport_width = viewport_height * aspect_ratio;
+    void render(const universe& environ, usize width, usize height, std::span<color> data) {
+        const f32 aspect = width / static_cast<f32>(height);
+        const f32 viewport_width = viewport_height * aspect;
 
-constexpr f32 camera_focal_length = 1.0;
-constexpr vec3f camera_center = vec3f(0, 0, 0);
-constexpr vec3f viewport_u = vec3f(viewport_width, 0, 0);
-constexpr vec3f viewport_v = vec3f(0, -viewport_height, 0);
-constexpr vec3f pixel_delta_u = viewport_u / f32(image_width);
-constexpr vec3f pixel_delta_v = viewport_v / f32(image_height);
-constexpr vec3f viewport_upper_left = camera_center - vec3f(0, 0, camera_focal_length) - viewport_u / f32(2) - viewport_v / f32(2);
-constexpr vec3f p00 = viewport_upper_left + .5f * (pixel_delta_u + pixel_delta_v); 
+        const vec3f viewport_u = vec3f(viewport_width, 0, 0);
+        const vec3f viewport_v = vec3f(0, -viewport_height, 0);
+        const vec3f pixel_delta_u = viewport_u / f32(width);
+        const vec3f pixel_delta_v = viewport_v / f32(height);
+        const vec3f viewport_upper_left = position - vec3f(0, 0, focal_length) - viewport_u / f32(2) - viewport_v / f32(2);
+        const vec3f p00 = viewport_upper_left + .5f * (pixel_delta_u + pixel_delta_v); 
+        
+        const f32 samples_scale = 1.f / samples_per_pixel;
+
+        for (usize i = 0; i < height; ++i) {
+            for (usize j = 0; j < width; ++j) {
+                color pixel_samples = {};
+
+                for (usize k = 0; k < samples_per_pixel; ++k) {
+                    const vec2f random_sample = random_sample_vec2f();
+                    const vec3f pixel_position = p00 + pixel_delta_u * f32(j + random_sample.x) + pixel_delta_v * f32(i + random_sample.y);
+
+                    const vec3f ray_direction = pixel_position - position;
+                    const ray ray{position, ray_direction};
+
+                    pixel_samples += ray_color(environ, ray);
+                }
+
+                data[i*width+j] = pixel_samples * samples_scale;
+            }
+        }
+    }
+private:
+    color ray_color(const universe& environ, const ray& ray) {
+        std::optional<ray_hit> hit = environ.intersection(ray, 0, std::numeric_limits<f32>::infinity());
+        if(hit) {
+            return (hit->norm()+color(1.0f))*.5f;
+        }
+
+        return color(0, 0, 0);
+    }
+    
+    vec2f random_sample_vec2f() {
+        return {sampling_distribution(sampling_entropy) - .5f, sampling_distribution(sampling_entropy) - .5f}; 
+    }
+
+    vec3f position;
+    f32 focal_length;
+    f32 viewport_height;
+    usize samples_per_pixel;
+    std::default_random_engine sampling_entropy;
+    std::uniform_real_distribution<f32> sampling_distribution;
+};
 
 void renderPPM(std::ostream& output, usize w, usize h, const color* data) {
     output << "P3\n" << w << ' ' << h << "\n255\n";
@@ -152,37 +196,21 @@ void renderPPM(std::ostream& output, usize w, usize h, const color* data) {
     }
 }
 
-constexpr sphere s = sphere(vec3f{0, 0, -1}, .5f);
-const universe environ = universe()
-    .add(sphere{{0, 0, -1}, .5f})
-    .add(sphere{{.2, .9, -1}, .1f});
 
-color ray_color(const ray& ray) {
-    std::optional<ray_hit> hit = environ.intersection(ray, 0, 100000.f);
-    if(hit) {
-        return (hit->norm()+color(1.0f))*.5f;
-    }
-
-    return color(0, 0, 0);
-}
+constexpr usize image_width = 800;
+constexpr usize image_height = 600;
 
 int main() {
     std::vector<color> image;
     image.reserve(image_width*image_height);
     image.resize(image_width*image_height);
 
-    for (usize i = 0; i < image_height; ++i) {
-        if(i % 50) {
-            std::clog << std::format("Progress... {:.1f}%\n", (i / static_cast<f32>(image_height)) * 100);
-        }
+    const universe environ = universe()
+    .add(sphere{{0, 0, -1}, .5f})
+    .add(sphere{{0, -100.5, -1}, 100});
 
-        for (usize j = 0; j < image_width; ++j) {
-            const vec3f pixel_position = p00 + pixel_delta_u * f32(j) + pixel_delta_v * f32(i);
-            const vec3f ray_direction = pixel_position - camera_center;
-            const ray ray{camera_center, ray_direction};
-            image[i*image_width+j] = ray_color(ray);
-        }
-    } 
+    camera cam{{0, 0, 0}, 1.f, 2.f, 16};
+    cam.render(environ, image_width, image_height, image);
 
     std::ofstream output("out.ppm");
     renderPPM(output, image_width, image_height, image.data());
