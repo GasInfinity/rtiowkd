@@ -10,6 +10,7 @@
 #include <vector>
 #include <algorithm>
 #include <random>
+#include <chrono>
 #include <cmath>
 
 typedef std::uint8_t u8;
@@ -57,11 +58,28 @@ vec3f random_vec3f(Gen& random, f32 min, f32 max) {
 }
 
 template<std::uniform_random_bit_generator Gen>
+vec2f random_vec2f(Gen& random, f32 min, f32 max) {
+    std::uniform_real_distribution<f32> distribution(min, max);
+    return {distribution(random), distribution(random)};
+}
+
+template<std::uniform_random_bit_generator Gen>
 vec3f random_unit_vec3f(Gen& random) {
     vec3f v = random_vec3f(random, -1, 1);
 
-    while (std::abs(rnm::length_sqr(v)) < .0000001f) {
+    while (std::abs(rnm::length_sqr(v)) < .000001f) {
         v = random_vec3f(random, -1, 1);
+    }
+
+    return rnm::normalized(v);
+}
+
+template<std::uniform_random_bit_generator Gen>
+vec2f random_unit_vec2f(Gen& random) {
+    vec2f v = random_vec2f(random, -1, 1);
+
+    while (std::abs(rnm::length_sqr(v)) < .000001f) {
+        v = random_vec2f(random, -1, 1);
     }
 
     return rnm::normalized(v);
@@ -230,23 +248,32 @@ private:
 };
 
 struct camera {
-    camera(const vec3f& position, f32 focal_length, f32 viewport_height, f32 samples_per_pixel, f32 ray_depth)
-        : position(position), focal_length(focal_length), viewport_height(viewport_height), samples_per_pixel(samples_per_pixel), ray_depth(ray_depth), entropy(std::random_device{}()), sampling_distribution(-.5f, .5f) { }
+    camera(const vec3f& position, const vec3f& look_at, f32 vfov, f32 defocus_angle, f32 focus_distance, f32 samples_per_pixel, f32 ray_depth)
+        : position(position), vfov(vfov), defocus_angle(defocus_angle), focus_distance(focus_distance),
+          w(rnm::normalized(position - look_at)), u(rnm::normalized(rnm::cross(vec3f(0, 1.f, 0), w))), v(rnm::cross(w, u)), 
+          viewport_height(2.f * std::tan(vfov * std::numbers::pi_v<f32> / 360.f) * focus_distance),
+          samples_per_pixel(samples_per_pixel), ray_depth(ray_depth), entropy(default_random()), sampling_distribution(-.5f, .5f) { }
 
     void render(const universe& environ, usize width, usize height, std::span<color> data) {
         const f32 aspect = width / static_cast<f32>(height);
         const f32 viewport_width = viewport_height * aspect;
 
-        const vec3f viewport_u = vec3f(viewport_width, 0, 0);
-        const vec3f viewport_v = vec3f(0, -viewport_height, 0);
+        const vec3f viewport_u = viewport_width * u;
+        const vec3f viewport_v = viewport_height * -v;
         const vec3f pixel_delta_u = viewport_u / width;
         const vec3f pixel_delta_v = viewport_v / height;
-        const vec3f viewport_upper_left = position - vec3f(0, 0, focal_length) - viewport_u / 2 - viewport_v / 2;
+        const vec3f viewport_upper_left = position - w * focus_distance - viewport_u / 2 - viewport_v / 2;
         const vec3f p00 = viewport_upper_left + .5f * (pixel_delta_u + pixel_delta_v); 
         
         const f32 samples_scale = 1.f / samples_per_pixel;
 
+        const f32 defocus_radius = focus_distance * std::tan((defocus_angle / 2.f) * std::numbers::pi_v<f32> / 180.f);
+        const vec3f defocus_disk_u = defocus_radius * u;
+        const vec3f defocus_disk_v = defocus_radius * v;
+
         for (usize i = 0; i < height; ++i) {
+            std::clog << "Current scanline: " << i << " / " << height << std::endl;
+
             for (usize j = 0; j < width; ++j) {
                 color pixel_samples = {};
 
@@ -254,8 +281,9 @@ struct camera {
                     const vec2f random_sample = random_sample_vec2f();
                     const vec3f pixel_position = p00 + pixel_delta_u * (j + random_sample.x) + pixel_delta_v * (i + random_sample.y);
 
-                    const vec3f ray_direction = rnm::normalized(pixel_position - position);
-                    const ray ray{position, ray_direction};
+                    const vec3f ray_origin = defocus_angle <= 0 ? position : random_defocus_disk_position(defocus_disk_u, defocus_disk_v);
+                    const vec3f ray_direction = rnm::normalized(pixel_position - ray_origin);
+                    const ray ray{ray_origin, ray_direction};
 
                     pixel_samples += ray_color(environ, ray, ray_depth);
                 }
@@ -286,13 +314,20 @@ private:
         return rnm::lerp(color(1.f), color(.5, .7, 1.f), (ray.dir().y + 1.f) * .5f);
     }
     
+    vec3f random_defocus_disk_position(const vec3f& defocus_u, const vec3f& defocus_v) {
+        vec2f random_disk = random_unit_vec2f(default_random);
+        return position + random_disk.x * defocus_u + random_disk.y * defocus_v;
+    }
+
     vec2f random_sample_vec2f() {
         return {sampling_distribution(entropy), sampling_distribution(entropy)}; 
     }
 
-
     vec3f position;
-    f32 focal_length;
+    f32 vfov;
+    vec3f w, u, v;
+    f32 defocus_angle;
+    f32 focus_distance;
     f32 viewport_height;
     usize samples_per_pixel;
     usize ray_depth;
@@ -322,23 +357,51 @@ void renderPPM(std::ostream& output, usize w, usize h, const color* data) {
 }
 
 
-constexpr usize image_width = 400;
-constexpr usize image_height = 225;
+constexpr usize image_width = 1280;
+constexpr usize image_height = 720;
 
 int main() {
     std::vector<color> image;
     image.reserve(image_width*image_height);
     image.resize(image_width*image_height);
 
-    const universe environ = universe()
-    .add(sphere{{0, -100.5, -1}, 100, material{lambertian_material{{0.8, 0.8, 0.0}}}})
-    .add(sphere{{0, 0, -1.2f}, .5f, material{lambertian_material{{0.1, 0.2, 0.5}}}})
-    .add(sphere{{-1, 0, -1}, .5f, material{dielectric_material{1.5f}}})
-    .add(sphere{{-1, 0, -1}, .4f, material{dielectric_material{1.f / 1.5f}}})
-    .add(sphere{{1, 0, -1}, .5f, material{metal_material{{.8f, .6f, .2f}, 1.f}}});
+    universe environ = universe()
+    // Ground
+    .add(sphere{vec3f{0, -1000.8f, -1.f}, 1000.f, material{lambertian_material{color{0.2f, 0.6f, 0.9f}, 1.f}}})
 
-    camera cam{{0, 0, 0}, 1.f, 2.f, 320, 50};
+    // Big balls
+    .add(sphere{vec3f{-4.f, 2.f, -1.f}, 4.f, material{metal_material{color{0.6f, 0.6f, 0.9f}, 0.f}}})
+    .add(sphere{vec3f{10.f, 2.f, -0.8f}, 4.f, material{metal_material{color{0.6f, 0.6f, 0.9f}, 0.f}}})
+
+    .add(sphere{vec3f{0, 0, -1.f}, .5f, material{lambertian_material{color{.4, .9, .4}}}});
+
+    for (usize i = 0; i < 300; ++i) {
+        f32 x = (default_real_distribution(default_random) * 2 - 1.f) * 20.f;
+        f32 z = (default_real_distribution(default_random) * 2 - 1.f) * 15.f;
+
+        f32 size = default_real_distribution(default_random) * .4f;
+
+        f32 mat = default_real_distribution(default_random);
+
+        if(mat < .2f) {
+        f32 fuzz = default_real_distribution(default_random);
+            environ.add(sphere{vec3f{x, size / 4.f, z}, size, material{metal_material{color{.8, .8, .8}, fuzz}}});
+        } else if(mat < .6f) {
+            environ.add(sphere{vec3f{x, size / 4.f, z}, size, material{metal_material{color{.8, .8, .8}, .1}}});
+        } else if(mat < .8f) {
+            environ.add(sphere{vec3f{x, size / 4.f, z}, size, material{lambertian_material{random_unit_vec3f(default_random)}}});
+        } else {
+            environ.add(sphere{vec3f{x, size / 4.f, z}, size, material{dielectric_material{1.f / default_real_distribution(default_random)}}});
+        }
+    }
+
+    camera cam{{0, 3, 5}, {0, 0, -1.f}, 90.f, .4f, std::sqrt(45.f), 500, 20};
+
+    std::chrono::time_point start = std::chrono::high_resolution_clock::now();
     cam.render(environ, image_width, image_height, image);
+    std::chrono::time_point end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration elapsed = end - start;
+    std::cout << "Taken: " << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed);
 
     std::ofstream output("out.ppm");
     renderPPM(output, image_width, image_height, image.data());
